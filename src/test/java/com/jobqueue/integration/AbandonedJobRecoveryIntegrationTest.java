@@ -65,7 +65,10 @@ class AbandonedJobRecoveryIntegrationTest extends AbstractIntegrationTest {
     @Test
     void jobAbandonedWhileRunningIsRecoveredAndRetried() {
         UUID jobId = UUID.randomUUID();
-        Job job = Job.newJob(jobId, null, "slow", "{}", 1, 30, Instant.now());
+        // maxRetries=2: a crash counts as one failed attempt (retryCount -> 1), and
+        // hasRetriesRemaining is retryCount < maxRetries, so this attempt must still have budget
+        // left (1 < 2) for recovery to land it back in QUEUED rather than straight to FAILED.
+        Job job = Job.newJob(jobId, null, "slow", "{}", 2, 30, Instant.now());
         jobRepository.saveAndFlush(job);
 
         // Simulate: a (now-dead) worker claimed the job for execution...
