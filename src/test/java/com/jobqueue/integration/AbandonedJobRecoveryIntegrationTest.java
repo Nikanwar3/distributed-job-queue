@@ -45,6 +45,10 @@ class AbandonedJobRecoveryIntegrationTest extends AbstractIntegrationTest {
         // deliberately abandons, since Redis consumer groups hand work to any consumer in the group
         // regardless of which Spring context created it.
         registry.add("jobqueue.namespace", () -> "jobqueue-test-recovery");
+        // Only this test needs the recovery scheduler to act fast; see the explanatory comment in
+        // AbstractIntegrationTest on why that's not set suite-wide.
+        registry.add("jobqueue.recovery-interval-ms", () -> "500");
+        registry.add("jobqueue.recovery-min-idle-ms", () -> "1500");
     }
 
     @Autowired

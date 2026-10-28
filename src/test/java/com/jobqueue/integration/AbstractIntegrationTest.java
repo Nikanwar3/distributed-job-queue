@@ -45,9 +45,15 @@ public abstract class AbstractIntegrationTest {
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
-        // Fast polling so tests don't wait on production-sized intervals.
-        registry.add("jobqueue.recovery-interval-ms", () -> "500");
-        registry.add("jobqueue.recovery-min-idle-ms", () -> "1500");
+        // Fast retry polling so tests don't wait on production-sized intervals. Deliberately NOT
+        // overriding recovery-min-idle-ms/recovery-interval-ms here: those control when the
+        // recovery scheduler decides a pending message has been abandoned, and every context's
+        // scheduler runs continuously for the rest of the suite regardless of which test class is
+        // currently executing. A short idle threshold is exactly what AbandonedJobRecoveryIntegration-
+        // Test needs to keep its own waits fast — but applied here, it would also apply to every
+        // other context, where it caused real jobs that were simply still (legitimately) processing
+        // under CI load to be misdiagnosed as abandoned and reprocessed out from under the worker
+        // actually running them. That test overrides these two itself, alongside its own namespace.
         registry.add("jobqueue.delayed-retry-interval-ms", () -> "200");
         registry.add("jobqueue.retry.base-delay-ms", () -> "200");
         registry.add("jobqueue.retry.max-delay-ms", () -> "1000");

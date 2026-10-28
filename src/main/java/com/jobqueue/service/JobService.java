@@ -142,33 +142,46 @@ public class JobService {
      * will never run. Running jobs receive a best-effort interrupt broadcast — see README
      * "Cancellation semantics" for the consistency limitations of cancelling a job already in
      * flight on another instance.
+     *
+     * <p>The database mutation and the Redis broadcast are deliberately two separate steps, in
+     * that order. Publishing from inside the transaction would race the commit: the message can
+     * reach a worker (which then does a fresh read of {@code cancelRequested} to confirm it,
+     * guarding against the exact same ordering problem on its side) before this transaction has
+     * actually committed, and under READ COMMITTED that fresh read would see the pre-cancellation
+     * value. Broadcasting only after {@link TransactionTemplate#execute} returns guarantees the
+     * write is already durable and visible by the time anyone can react to the signal.
      */
-    @Transactional
     public CancellationOutcome cancel(UUID jobId) {
-        // PESSIMISTIC_WRITE avoids a lost-update race against a worker concurrently transitioning
-        // this same row from QUEUED to RUNNING.
-        Job job = entityManager.find(Job.class, jobId, LockModeType.PESSIMISTIC_WRITE);
-        if (job == null) {
-            throw new JobNotFoundException(jobId);
-        }
+        CancellationOutcome outcome = requiresNewTransaction.execute(status -> {
+            // PESSIMISTIC_WRITE avoids a lost-update race against a worker concurrently
+            // transitioning this same row from QUEUED to RUNNING.
+            Job job = entityManager.find(Job.class, jobId, LockModeType.PESSIMISTIC_WRITE);
+            if (job == null) {
+                throw new JobNotFoundException(jobId);
+            }
 
-        return switch (job.getStatus()) {
-            case QUEUED -> {
-                job.setStatus(JobStatus.CANCELLED);
-                job.setCompletedAt(Instant.now());
-                job.setUpdatedAt(Instant.now());
-                metrics.jobCancelled();
-                yield CancellationOutcome.CANCELLED_IMMEDIATELY;
-            }
-            case RUNNING -> {
-                job.setCancelRequested(true);
-                job.setUpdatedAt(Instant.now());
-                cancellationPublisher.requestCancellation(jobId);
-                yield CancellationOutcome.CANCELLATION_REQUESTED;
-            }
-            case COMPLETED, FAILED, CANCELLED ->
-                    throw new JobNotCancellableException(jobId, job.getStatus());
-        };
+            return switch (job.getStatus()) {
+                case QUEUED -> {
+                    job.setStatus(JobStatus.CANCELLED);
+                    job.setCompletedAt(Instant.now());
+                    job.setUpdatedAt(Instant.now());
+                    metrics.jobCancelled();
+                    yield CancellationOutcome.CANCELLED_IMMEDIATELY;
+                }
+                case RUNNING -> {
+                    job.setCancelRequested(true);
+                    job.setUpdatedAt(Instant.now());
+                    yield CancellationOutcome.CANCELLATION_REQUESTED;
+                }
+                case COMPLETED, FAILED, CANCELLED ->
+                        throw new JobNotCancellableException(jobId, job.getStatus());
+            };
+        });
+
+        if (outcome == CancellationOutcome.CANCELLATION_REQUESTED) {
+            cancellationPublisher.requestCancellation(jobId);
+        }
+        return outcome;
     }
 
     public record SubmissionResult(Job job, boolean created) {
