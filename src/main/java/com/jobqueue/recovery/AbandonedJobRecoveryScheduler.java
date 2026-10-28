@@ -6,7 +6,6 @@ import com.jobqueue.domain.JobExecution;
 import com.jobqueue.domain.JobStatus;
 import com.jobqueue.metrics.JobMetrics;
 import com.jobqueue.queue.JobQueuePublisher;
-import com.jobqueue.queue.RedisKeys;
 import com.jobqueue.queue.RetryQueue;
 import com.jobqueue.repository.JobExecutionRepository;
 import com.jobqueue.repository.JobRepository;
@@ -77,7 +76,7 @@ public class AbandonedJobRecoveryScheduler {
         PendingMessages pending;
         try {
             pending = redisTemplate.opsForStream()
-                    .pending(RedisKeys.JOB_STREAM, RedisKeys.CONSUMER_GROUP, Range.unbounded(), SCAN_BATCH_SIZE);
+                    .pending(properties.getStreamKey(), properties.getConsumerGroup(), Range.unbounded(), SCAN_BATCH_SIZE);
         } catch (Exception e) {
             log.error("Failed to scan pending entries for recovery", e);
             return;
@@ -94,10 +93,12 @@ public class AbandonedJobRecoveryScheduler {
 
     private void reclaim(String recordId, Duration minIdle) {
         String recoveryConsumer = workerIdentity.id() + "-recovery";
+        String streamKey = properties.getStreamKey();
+        String consumerGroup = properties.getConsumerGroup();
         List<org.springframework.data.redis.connection.stream.MapRecord<String, Object, Object>> claimed;
         try {
             claimed = redisTemplate.opsForStream().claim(
-                    RedisKeys.JOB_STREAM, RedisKeys.CONSUMER_GROUP, recoveryConsumer, minIdle, RecordId.of(recordId));
+                    streamKey, consumerGroup, recoveryConsumer, minIdle, RecordId.of(recordId));
         } catch (Exception e) {
             // Another instance's recovery scheduler may have claimed it first between our scan and
             // this call; that's expected under concurrent recovery and not an error.
@@ -112,7 +113,7 @@ public class AbandonedJobRecoveryScheduler {
         try {
             recoverJob(jobId);
         } finally {
-            redisTemplate.opsForStream().acknowledge(RedisKeys.JOB_STREAM, RedisKeys.CONSUMER_GROUP, recordId);
+            redisTemplate.opsForStream().acknowledge(streamKey, consumerGroup, recordId);
         }
     }
 

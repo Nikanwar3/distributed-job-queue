@@ -18,7 +18,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.util.List;
@@ -44,6 +46,7 @@ public class JobService {
     private final JobQueueProperties properties;
     private final JobMetrics metrics;
     private final EntityManager entityManager;
+    private final TransactionTemplate requiresNewTransaction;
 
     public JobService(JobRepository jobRepository,
                        JobExecutionRepository jobExecutionRepository,
@@ -51,7 +54,8 @@ public class JobService {
                        CancellationPublisher cancellationPublisher,
                        JobQueueProperties properties,
                        JobMetrics metrics,
-                       EntityManager entityManager) {
+                       EntityManager entityManager,
+                       PlatformTransactionManager transactionManager) {
         this.jobRepository = jobRepository;
         this.jobExecutionRepository = jobExecutionRepository;
         this.jobQueuePublisher = jobQueuePublisher;
@@ -59,6 +63,8 @@ public class JobService {
         this.properties = properties;
         this.metrics = metrics;
         this.entityManager = entityManager;
+        this.requiresNewTransaction = new TransactionTemplate(transactionManager);
+        this.requiresNewTransaction.setPropagationBehavior(TransactionTemplate.PROPAGATION_REQUIRES_NEW);
     }
 
     /**
@@ -66,7 +72,6 @@ public class JobService {
      * unchanged instead of creating a duplicate — this makes client-side retries of the submit
      * call safe.
      */
-    @Transactional
     public SubmissionResult submit(String idempotencyKey, String type, String payload,
                                     Integer maxRetries, Integer timeoutSeconds) {
         if (idempotencyKey != null) {
@@ -88,7 +93,12 @@ public class JobService {
                 Instant.now());
 
         try {
-            jobRepository.saveAndFlush(job);
+            // Run the insert in its own fresh transaction. A unique-constraint violation here
+            // aborts the underlying Postgres transaction (SQLState 25P02) such that no further
+            // statement can run on it until it's rolled back — PROPAGATION_REQUIRES_NEW guarantees
+            // that rollback happens (and the connection is released) before this call returns, so
+            // the fallback lookup below always runs on a clean transaction instead of a doomed one.
+            requiresNewTransaction.executeWithoutResult(status -> jobRepository.saveAndFlush(job));
         } catch (DataIntegrityViolationException e) {
             // Two concurrent requests raced on the same idempotency key; the loser falls back to
             // the winner's row instead of failing the client.

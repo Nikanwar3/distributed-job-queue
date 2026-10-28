@@ -3,7 +3,6 @@ package com.jobqueue.worker;
 import com.jobqueue.config.JobQueueProperties;
 import com.jobqueue.domain.Job;
 import com.jobqueue.metrics.JobMetrics;
-import com.jobqueue.queue.RedisKeys;
 import com.jobqueue.queue.RetryQueue;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -103,15 +102,16 @@ public class JobWorker {
     }
 
     private void pollLoop() {
-        Consumer consumer = Consumer.from(RedisKeys.CONSUMER_GROUP, workerIdentity.id());
+        Consumer consumer = Consumer.from(properties.getConsumerGroup(), workerIdentity.id());
         StreamReadOptions readOptions = StreamReadOptions.empty()
                 .count(properties.getConsumerBatchSize())
                 .block(Duration.ofMillis(properties.getConsumerBlockMs()));
+        String streamKey = properties.getStreamKey();
 
         while (running) {
             try {
                 List<MapRecord<String, Object, Object>> records = redisTemplate.opsForStream()
-                        .read(consumer, readOptions, StreamOffset.create(RedisKeys.JOB_STREAM, ReadOffset.lastConsumed()));
+                        .read(consumer, readOptions, StreamOffset.create(streamKey, ReadOffset.lastConsumed()));
                 if (records == null || records.isEmpty()) {
                     continue;
                 }
@@ -134,7 +134,7 @@ public class JobWorker {
         try {
             executeClaimedJob(jobId);
         } finally {
-            redisTemplate.opsForStream().acknowledge(RedisKeys.JOB_STREAM, RedisKeys.CONSUMER_GROUP, record.getId());
+            redisTemplate.opsForStream().acknowledge(properties.getStreamKey(), properties.getConsumerGroup(), record.getId());
             MDC.clear();
         }
     }

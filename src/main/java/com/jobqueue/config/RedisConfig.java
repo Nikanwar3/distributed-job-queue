@@ -1,7 +1,6 @@
 package com.jobqueue.config;
 
 import com.jobqueue.queue.CancellationSubscriber;
-import com.jobqueue.queue.RedisKeys;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
@@ -13,10 +12,10 @@ public class RedisConfig {
 
     @Bean
     public RedisMessageListenerContainer cancellationListenerContainer(
-            RedisConnectionFactory connectionFactory, CancellationSubscriber subscriber) {
+            RedisConnectionFactory connectionFactory, CancellationSubscriber subscriber, JobQueueProperties properties) {
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
-        container.addMessageListener(subscriber, new ChannelTopic(RedisKeys.CANCELLATION_CHANNEL));
+        container.addMessageListener(subscriber, new ChannelTopic(properties.getCancellationChannel()));
         return container;
     }
 }

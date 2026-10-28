@@ -31,6 +31,12 @@ class BoundedConcurrencyIntegrationTest extends AbstractIntegrationTest {
     @DynamicPropertySource
     static void overrideConcurrency(DynamicPropertyRegistry registry) {
         registry.add("jobqueue.worker-concurrency", () -> String.valueOf(CONCURRENCY_LIMIT));
+        // Distinct property set => distinct (uncached) Spring context => its own live JobWorker
+        // running alongside the other test classes' contexts for the rest of the suite. Without its
+        // own namespace, that worker would compete with other contexts' workers over the same
+        // Redis consumer group and could "steal" jobs meant for this test (or vice versa),
+        // undercounting the observed concurrency.
+        registry.add("jobqueue.namespace", () -> "jobqueue-test-bounded-concurrency");
     }
 
     @Autowired

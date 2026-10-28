@@ -12,7 +12,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -37,52 +39,68 @@ public class WorkerJobLifecycle {
     private final JobExecutionRepository jobExecutionRepository;
     private final BackoffCalculator backoffCalculator;
     private final JobMetrics metrics;
+    private final TransactionTemplate requiresNewTransaction;
 
     public WorkerJobLifecycle(JobRepository jobRepository,
                                JobExecutionRepository jobExecutionRepository,
                                BackoffCalculator backoffCalculator,
-                               JobMetrics metrics) {
+                               JobMetrics metrics,
+                               PlatformTransactionManager transactionManager) {
         this.jobRepository = jobRepository;
         this.jobExecutionRepository = jobExecutionRepository;
         this.backoffCalculator = backoffCalculator;
         this.metrics = metrics;
+        this.requiresNewTransaction = new TransactionTemplate(transactionManager);
+        this.requiresNewTransaction.setPropagationBehavior(TransactionTemplate.PROPAGATION_REQUIRES_NEW);
     }
 
     /**
      * Attempts to claim {@code jobId} for execution on this worker. Returns empty if the job is
      * missing, already terminal (a duplicate delivery of a finished job), already running
      * (another consumer beat us to it), or was concurrently modified (optimistic lock loss).
+     *
+     * <p>The claim attempt runs in its own {@code REQUIRES_NEW} transaction rather than relying on
+     * this method's own {@code @Transactional} boundary. A failed optimistic-lock check aborts the
+     * underlying database transaction such that no further statement can run on it until it's
+     * rolled back (Hibernate marks the persistence context rollback-only); catching the exception
+     * and continuing within that same transaction doesn't work; the commit Spring attempts when this
+     * method returns normally fails with {@code UnexpectedRollbackException} instead. Isolating the
+     * attempt in its own transaction means a lost race rolls back cleanly and in full before this
+     * method returns, every time.
      */
-    @Transactional
     public Optional<ClaimedJob> tryStartRunning(UUID jobId, String workerId) {
-        Job job = jobRepository.findById(jobId).orElse(null);
-        if (job == null) {
-            log.warn("Job {} referenced by stream message no longer exists", jobId);
-            return Optional.empty();
-        }
-        if (job.getStatus() != JobStatus.QUEUED) {
-            log.debug("Skipping job {} in status {} (duplicate or stale delivery)", jobId, job.getStatus());
-            metrics.duplicateDeliverySkipped();
-            return Optional.empty();
-        }
-
-        Instant now = Instant.now();
-        job.setStatus(JobStatus.RUNNING);
-        job.setStartedAt(now);
-        job.setUpdatedAt(now);
-
+        ClaimedJob claimed;
         try {
-            jobRepository.saveAndFlush(job);
+            claimed = requiresNewTransaction.execute(status -> {
+                Job job = jobRepository.findById(jobId).orElse(null);
+                if (job == null) {
+                    log.warn("Job {} referenced by stream message no longer exists", jobId);
+                    return null;
+                }
+                if (job.getStatus() != JobStatus.QUEUED) {
+                    log.debug("Skipping job {} in status {} (duplicate or stale delivery)", jobId, job.getStatus());
+                    metrics.duplicateDeliverySkipped();
+                    return null;
+                }
+
+                Instant now = Instant.now();
+                job.setStatus(JobStatus.RUNNING);
+                job.setStartedAt(now);
+                job.setUpdatedAt(now);
+                jobRepository.saveAndFlush(job);
+
+                int attemptNumber = job.getRetryCount() + 1;
+                JobExecution execution = JobExecution.started(jobId, attemptNumber, workerId, now);
+                jobExecutionRepository.save(execution);
+
+                return new ClaimedJob(job, execution.getId(), attemptNumber);
+            });
         } catch (OptimisticLockingFailureException e) {
             log.debug("Lost race to claim job {}", jobId);
             return Optional.empty();
         }
 
-        int attemptNumber = job.getRetryCount() + 1;
-        JobExecution execution = JobExecution.started(jobId, attemptNumber, workerId, now);
-        jobExecutionRepository.save(execution);
-
-        return Optional.of(new ClaimedJob(job, execution.getId(), attemptNumber));
+        return Optional.ofNullable(claimed);
     }
 
     @Transactional

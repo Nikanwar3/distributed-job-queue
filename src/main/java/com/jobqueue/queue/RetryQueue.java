@@ -1,5 +1,6 @@
 package com.jobqueue.queue;
 
+import com.jobqueue.config.JobQueueProperties;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -17,24 +18,26 @@ import java.util.UUID;
 public class RetryQueue {
 
     private final StringRedisTemplate redisTemplate;
+    private final JobQueueProperties properties;
 
-    public RetryQueue(StringRedisTemplate redisTemplate) {
+    public RetryQueue(StringRedisTemplate redisTemplate, JobQueueProperties properties) {
         this.redisTemplate = redisTemplate;
+        this.properties = properties;
     }
 
     public void scheduleRetry(UUID jobId, Instant nextRetryAt) {
-        redisTemplate.opsForZSet().add(RedisKeys.DELAYED_RETRY_SET, jobId.toString(), nextRetryAt.toEpochMilli());
+        redisTemplate.opsForZSet().add(properties.getDelayedRetrySetKey(), jobId.toString(), nextRetryAt.toEpochMilli());
     }
 
     /** Returns the job ids that are due and atomically removes them from the delayed set. */
     public Set<UUID> claimDueRetries(Instant now, int limit) {
-        Set<String> due = redisTemplate.opsForZSet()
-                .rangeByScore(RedisKeys.DELAYED_RETRY_SET, 0, now.toEpochMilli(), 0, limit);
+        String key = properties.getDelayedRetrySetKey();
+        Set<String> due = redisTemplate.opsForZSet().rangeByScore(key, 0, now.toEpochMilli(), 0, limit);
         if (due == null || due.isEmpty()) {
             return Set.of();
         }
         return due.stream()
-                .filter(idStr -> redisTemplate.opsForZSet().remove(RedisKeys.DELAYED_RETRY_SET, idStr) == 1L)
+                .filter(idStr -> redisTemplate.opsForZSet().remove(key, idStr) == 1L)
                 .map(UUID::fromString)
                 .collect(java.util.stream.Collectors.toSet());
     }

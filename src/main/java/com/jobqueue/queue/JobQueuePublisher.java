@@ -1,5 +1,6 @@
 package com.jobqueue.queue;
 
+import com.jobqueue.config.JobQueueProperties;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -13,13 +14,15 @@ import java.util.UUID;
 public class JobQueuePublisher {
 
     private final StringRedisTemplate redisTemplate;
+    private final JobQueueProperties properties;
 
-    public JobQueuePublisher(StringRedisTemplate redisTemplate) {
+    public JobQueuePublisher(StringRedisTemplate redisTemplate, JobQueueProperties properties) {
         this.redisTemplate = redisTemplate;
+        this.properties = properties;
     }
 
     public RecordId publish(UUID jobId) {
-        MapRecord<String, String, String> record = MapRecord.create(RedisKeys.JOB_STREAM, Map.of("jobId", jobId.toString()));
+        MapRecord<String, String, String> record = MapRecord.create(properties.getStreamKey(), Map.of("jobId", jobId.toString()));
         return redisTemplate.<String, String>opsForStream().add(record);
     }
 }

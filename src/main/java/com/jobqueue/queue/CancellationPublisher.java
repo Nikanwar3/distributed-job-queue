@@ -1,5 +1,6 @@
 package com.jobqueue.queue;
 
+import com.jobqueue.config.JobQueueProperties;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -15,12 +16,14 @@ import java.util.UUID;
 public class CancellationPublisher {
 
     private final StringRedisTemplate redisTemplate;
+    private final JobQueueProperties properties;
 
-    public CancellationPublisher(StringRedisTemplate redisTemplate) {
+    public CancellationPublisher(StringRedisTemplate redisTemplate, JobQueueProperties properties) {
         this.redisTemplate = redisTemplate;
+        this.properties = properties;
     }
 
     public void requestCancellation(UUID jobId) {
-        redisTemplate.convertAndSend(RedisKeys.CANCELLATION_CHANNEL, jobId.toString());
+        redisTemplate.convertAndSend(properties.getCancellationChannel(), jobId.toString());
     }
 }

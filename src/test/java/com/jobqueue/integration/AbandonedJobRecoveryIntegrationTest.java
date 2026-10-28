@@ -1,9 +1,9 @@
 package com.jobqueue.integration;
 
+import com.jobqueue.config.JobQueueProperties;
 import com.jobqueue.domain.Job;
 import com.jobqueue.domain.JobStatus;
 import com.jobqueue.queue.JobQueuePublisher;
-import com.jobqueue.queue.RedisKeys;
 import com.jobqueue.repository.JobRepository;
 import com.jobqueue.worker.WorkerJobLifecycle;
 import org.junit.jupiter.api.Test;
@@ -38,6 +38,13 @@ class AbandonedJobRecoveryIntegrationTest extends AbstractIntegrationTest {
     @DynamicPropertySource
     static void disableWorker(DynamicPropertyRegistry registry) {
         registry.add("jobqueue.worker-enabled", () -> "false");
+        // Distinct property set => its own (uncached) Spring context, running alongside every other
+        // test class's context for the rest of the suite. Without its own namespace, this context's
+        // recovery scheduler would also scan (and potentially race on) the shared default stream,
+        // and — worse — other contexts' live JobWorkers would compete for the messages this test
+        // deliberately abandons, since Redis consumer groups hand work to any consumer in the group
+        // regardless of which Spring context created it.
+        registry.add("jobqueue.namespace", () -> "jobqueue-test-recovery");
     }
 
     @Autowired
@@ -51,6 +58,9 @@ class AbandonedJobRecoveryIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired
     private StringRedisTemplate redisTemplate;
+
+    @Autowired
+    private JobQueueProperties properties;
 
     @Test
     void jobAbandonedWhileRunningIsRecoveredAndRetried() {
@@ -91,17 +101,17 @@ class AbandonedJobRecoveryIntegrationTest extends AbstractIntegrationTest {
     private void deliverAndAbandon(UUID jobId, String consumerName) {
         jobQueuePublisher.publish(jobId);
         redisTemplate.opsForStream().read(
-                Consumer.from(RedisKeys.CONSUMER_GROUP, consumerName),
+                Consumer.from(properties.getConsumerGroup(), consumerName),
                 StreamReadOptions.empty().count(10).block(Duration.ofSeconds(2)),
-                StreamOffset.create(RedisKeys.JOB_STREAM, ReadOffset.lastConsumed()));
+                StreamOffset.create(properties.getStreamKey(), ReadOffset.lastConsumed()));
         // Deliberately not acknowledged: this message now sits in the PEL until recovery claims it.
     }
 
     private boolean readOneRecordFor(UUID jobId) {
         List<MapRecord<String, Object, Object>> records = redisTemplate.opsForStream().read(
-                Consumer.from(RedisKeys.CONSUMER_GROUP, "verifier-" + UUID.randomUUID()),
+                Consumer.from(properties.getConsumerGroup(), "verifier-" + UUID.randomUUID()),
                 StreamReadOptions.empty().count(20).block(Duration.ofMillis(500)),
-                StreamOffset.create(RedisKeys.JOB_STREAM, ReadOffset.lastConsumed()));
+                StreamOffset.create(properties.getStreamKey(), ReadOffset.lastConsumed()));
         if (records == null) {
             return false;
         }

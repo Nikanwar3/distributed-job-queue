@@ -33,6 +33,38 @@ public class JobQueueProperties {
     /** How often the delayed-retry scheduler polls for due retries. */
     private long delayedRetryIntervalMs = 1000;
 
+    /**
+     * Prefix for every Redis key/channel this instance uses (stream, consumer group, delayed-retry
+     * set, cancellation channel). Changing it lets multiple independent deployments share one Redis
+     * instance without their streams/consumer groups colliding — and lets integration tests give
+     * each Spring context its own isolated namespace instead of fighting over one shared stream.
+     */
+    private String namespace = "jobqueue";
+
+    public String getNamespace() {
+        return namespace;
+    }
+
+    public void setNamespace(String namespace) {
+        this.namespace = namespace;
+    }
+
+    public String getStreamKey() {
+        return namespace + ":stream";
+    }
+
+    public String getConsumerGroup() {
+        return namespace + ":workers";
+    }
+
+    public String getDelayedRetrySetKey() {
+        return namespace + ":delayed";
+    }
+
+    public String getCancellationChannel() {
+        return namespace + ":cancel";
+    }
+
     public boolean isWorkerEnabled() {
         return workerEnabled;
     }

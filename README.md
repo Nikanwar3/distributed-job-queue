@@ -44,6 +44,13 @@ PostgreSQL remains the **source of truth** for job state throughout — the stre
 a job id as a wake-up signal. This split matters: Redis data is coordination/ephemeral (safe to
 lose and rebuild), Postgres data is the durable record a client's `GET /jobs/{id}` depends on.
 
+Every Redis key this platform touches (the stream, its consumer group, the delayed-retry set, the
+cancellation channel) is prefixed by `jobqueue.namespace` (default `jobqueue`). Beyond letting
+multiple independent deployments share one Redis instance without colliding, this is what keeps
+the integration test suite honest: a handful of tests need a differently-configured Spring context
+(disabled worker, a smaller concurrency cap), and each of those gets its own namespace so its
+worker/scheduler isn't competing with every other test class's live worker over one shared stream.
+
 ## Concurrency decisions
 
 - **Per-instance bounded concurrency**: each instance runs one thread blocked on `XREADGROUP` and
@@ -57,6 +64,16 @@ lose and rebuild), Postgres data is the durable record a client's `GET /jobs/{id
   redelivery, for instance — exactly one wins the optimistic-lock check; the other sees the failure
   and backs off without ever calling the handler. This is the mechanism that makes duplicate
   delivery safe, not a deduplication cache.
+- **Losing a CAS race gets its own transaction, deliberately**: the claim attempt above runs inside
+  a `REQUIRES_NEW` transaction (`TransactionTemplate`), not the enclosing `@Transactional` method
+  boundary. A failed optimistic-lock check leaves the underlying database transaction aborted —
+  catching the exception and continuing in that *same* transaction doesn't work, because the next
+  statement (or the commit Spring attempts when the method returns normally) fails anyway
+  (`UnexpectedRollbackException` / Postgres `25P02`, "current transaction is aborted"). The same
+  pattern protects idempotent submission's unique-constraint race in `JobService.submit`. Both were
+  real bugs caught by the integration suite running in CI against a real Postgres, not something
+  caught by inspection — exactly the case for running them there rather than trusting that the code
+  "looks correct."
 - **Pooled Redis connections, deliberately**: Lettuce's default is to share one native connection
   across every operation on a `RedisTemplate`. The worker's `XREADGROUP` call blocks that
   connection for up to `consumer-block-ms` while waiting for new messages — on a shared connection,
