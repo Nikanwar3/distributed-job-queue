@@ -103,6 +103,16 @@ public class WorkerJobLifecycle {
         return Optional.ofNullable(claimed);
     }
 
+    /**
+     * Fresh read of whether cancellation has been requested for a running job — used by the worker
+     * to catch a cancellation broadcast that raced ahead of it registering for interruption. See
+     * {@link JobWorker#executeClaimedJob}.
+     */
+    @Transactional(readOnly = true)
+    public boolean isCancelRequested(UUID jobId) {
+        return jobRepository.findById(jobId).map(Job::isCancelRequested).orElse(false);
+    }
+
     @Transactional
     public void completeSuccessfully(UUID jobId, UUID executionId, String result) {
         Instant now = Instant.now();

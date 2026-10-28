@@ -152,6 +152,14 @@ public class JobWorker {
 
         runningJobRegistry.register(jobId, Thread.currentThread());
         Thread.interrupted(); // clear any stale interrupt flag left on this pooled thread
+        if (lifecycle.isCancelRequested(jobId)) {
+            // A cancellation broadcast can arrive (and find nobody registered yet) in the window
+            // between tryStartRunning committing RUNNING and the register() call just above — that
+            // signal has nothing to interrupt and is otherwise lost. Catching up here closes the
+            // race: from this point on, either this check or the live pub/sub subscriber (now that
+            // the thread is registered) is guaranteed to deliver the interrupt.
+            Thread.currentThread().interrupt();
+        }
         ScheduledFuture<?> timeoutFuture = timeoutWatchdog.schedule(
                 () -> interruptForTimeout(jobId), job.getTimeoutSeconds(), TimeUnit.SECONDS);
 
